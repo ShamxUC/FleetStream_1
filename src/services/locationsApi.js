@@ -26,6 +26,7 @@ async function request(resourceId, path = '', options = {}) {
 
   const response = await fetch(`${resource.url}${path}`, {
     ...options,
+    cache: 'no-store',
     headers: {
       Accept: 'application/json',
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
