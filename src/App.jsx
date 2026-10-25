@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Car, ShieldAlert, Cpu, Database, Activity,
+  Car, ShieldAlert, Cpu, Database, Activity, Zap,
   CheckCircle, AlertTriangle, Search, Play, Terminal, Server, Radio, RefreshCw, Send, Pencil, X
 } from 'lucide-react';
-import { createResourceRow, getResourceRows, moveAlertToResolved, ORDS_RESOURCES } from './services/locationsApi';
+import { createResourceRow, executeOracleProcedure, getResourceRows, getTriggerEvents, moveAlertToResolved, ORDS_PROCEDURES, ORDS_RESOURCES } from './services/locationsApi';
 
 const readField = (record, field) => record?.[field] ?? record?.[field.toUpperCase()] ?? '-';
 
@@ -16,9 +16,17 @@ export default function App() {
   const [recordJson, setRecordJson] = useState('');
   const [editingRecord, setEditingRecord] = useState(null);
   const [isSavingRecord, setIsSavingRecord] = useState(false);
-  const [terminalOutput, setTerminalOutput] = useState([]);
+  const [selectedProcedureId, setSelectedProcedureId] = useState(ORDS_PROCEDURES[0].id);
+  const [procedureParameters, setProcedureParameters] = useState('{}');
+  const [procedureOutput, setProcedureOutput] = useState('');
+  const [procedureError, setProcedureError] = useState('');
+  const [isRunningProcedure, setIsRunningProcedure] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [triggerEvents, setTriggerEvents] = useState([]);
+  const [triggerEventsError, setTriggerEventsError] = useState('');
+  const [isLoadingTriggerEvents, setIsLoadingTriggerEvents] = useState(false);
   const currentResource = ORDS_RESOURCES.find((resource) => resource.id === selectedResource);
+  const selectedProcedure = ORDS_PROCEDURES.find((procedure) => procedure.id === selectedProcedureId);
   const resourceColumns = Object.keys(resourceRows[0] ?? {}).filter((column) => column !== 'links');
 
   const refreshResource = async () => {
@@ -46,6 +54,25 @@ export default function App() {
         setResourceError(error.message);
       });
   }, [selectedResource]);
+
+  const refreshTriggerEvents = async () => {
+    setIsLoadingTriggerEvents(true);
+    setTriggerEventsError('');
+    setTriggerEvents([]);
+    try {
+      const result = await getTriggerEvents();
+      setTriggerEvents(result.events.sort((left, right) => {
+        const leftTime = Date.parse(readField(left, 'fecha_accion'));
+        const rightTime = Date.parse(readField(right, 'fecha_accion'));
+        return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+      }));
+      setTriggerEventsError(result.errors.join(' '));
+    } catch (error) {
+      setTriggerEventsError(error.message);
+    } finally {
+      setIsLoadingTriggerEvents(false);
+    }
+  };
 
   const submitRecord = async (event) => {
     event.preventDefault();
@@ -173,12 +200,28 @@ export default function App() {
     }
   };
 
-  // Ejecutor de scripts PL/SQL en consola
-  const runPLSQLProcedure = () => {
-    setTerminalOutput([
-      'No se ejecutó PL/SQL: estas rutas AutoREST exponen tablas, no procedimientos almacenados.',
-      'Publica el procedimiento como un módulo ORDS REST para poder invocarlo desde la aplicación.',
-    ]);
+  const runPLSQLProcedure = async (event) => {
+    event.preventDefault();
+
+    if (selectedProcedureId === 'prc_actualizar_estado_alertas' &&
+      !window.confirm('Este procedimiento puede modificar el estado de alertas existentes. ¿Confirmas que deseas ejecutarlo?')) {
+      return;
+    }
+
+    setIsRunningProcedure(true);
+    setProcedureError('');
+    setProcedureOutput('');
+    try {
+      const parameters = JSON.parse(procedureParameters);
+      if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+        throw new Error('Los parámetros deben ser un objeto JSON.');
+      }
+      setProcedureOutput(await executeOracleProcedure(selectedProcedureId, parameters));
+    } catch (error) {
+      setProcedureError(error.message);
+    } finally {
+      setIsRunningProcedure(false);
+    }
   };
 
   return (
@@ -254,13 +297,16 @@ export default function App() {
               <Database className="w-4 h-4" /> Tablas Oracle
           </button>
 
-          <button 
-            onClick={() => setActiveTab('plsql')}
+          <button
+            onClick={() => {
+              setActiveTab('triggers');
+              refreshTriggerEvents();
+            }}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              activeTab === 'plsql' ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+              activeTab === 'triggers' ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
             }`}
           >
-            <Terminal className="w-4 h-4" /> Runner PL/SQL Oracle
+            <Zap className="w-4 h-4" /> Auditoría de Triggers
           </button>
 
           <button 
@@ -625,67 +671,166 @@ export default function App() {
             <div className="space-y-6">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                 <h2 className="text-base font-bold text-white flex items-center gap-2 mb-1">
-                  <Terminal className="w-5 h-5 text-cyan-400" /> Procedimientos PL/SQL no conectados
+                  <Terminal className="w-5 h-5 text-cyan-400" /> Runner PL/SQL Oracle
                 </h2>
                 <p className="text-xs text-slate-400 mb-4">
-                  AutoREST habilita operaciones sobre tablas; estos procedimientos no tienen un módulo REST configurado y no se ejecutarán desde aquí.
+                  Ejecuta procedimientos publicados en ORDS mediante POST. Revisa los parámetros antes de ejecutar.
                 </p>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-                  <button 
-                    onClick={() => runPLSQLProcedure('generate_employee_report')}
-                    className="flex items-center justify-between p-3 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/50 rounded-xl transition-all text-left group"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-slate-200 group-hover:text-cyan-400">generate_employee_report</p>
-                      <p className="text-[10px] text-slate-500">Procedimiento con Cursores SQL y DBMS_OUTPUT</p>
-                    </div>
-                    <Play className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-                  </button>
+                <form onSubmit={runPLSQLProcedure} className="space-y-4">
+                  <label className="block space-y-1.5 text-xs text-slate-400">
+                    <span>Procedimiento ORDS</span>
+                    <select
+                      value={selectedProcedureId}
+                      onChange={(event) => {
+                        setSelectedProcedureId(event.target.value);
+                        setProcedureOutput('');
+                        setProcedureError('');
+                      }}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"
+                    >
+                      {ORDS_PROCEDURES.map((procedure) => (
+                        <option key={procedure.id} value={procedure.id}>{procedure.label}</option>
+                      ))}
+                    </select>
+                  </label>
 
-                  <button 
-                    onClick={() => runPLSQLProcedure('pkg_fleetstream.actualizar_estado_gps')}
-                    className="flex items-center justify-between p-3 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/50 rounded-xl transition-all text-left group"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-slate-200 group-hover:text-cyan-400">pkg_fleetstream.actualizar</p>
-                      <p className="text-[10px] text-slate-500">Package + Trigger Auditoría DML</p>
-                    </div>
-                    <Play className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-                  </button>
-
-                  <button 
-                    onClick={() => runPLSQLProcedure('RECORD_VARRAY_DEMO')}
-                    className="flex items-center justify-between p-3 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/50 rounded-xl transition-all text-left group"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-slate-200 group-hover:text-cyan-400">Demostración RECORD / VARRAY</p>
-                      <p className="text-[10px] text-slate-500">Colecciones compuestas en bloques anónimos</p>
-                    </div>
-                    <Play className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-                  </button>
-                </div>
-
-                {/* Terminal Window */}
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 min-h-[220px]">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-800/80 mb-3 text-slate-500 text-[11px]">
-                    <span className="flex items-center gap-2"><Terminal className="w-3.5 h-3.5" /> Output DBMS_OUTPUT.PUT_LINE</span>
-                    <span>Oracle Autonomous DB 21c</span>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-400 space-y-1">
+                    <p className="font-semibold text-slate-200">{selectedProcedure?.description}</p>
+                    <p>Parámetros publicados: {selectedProcedure?.parameters}</p>
                   </div>
 
-                  {terminalOutput.length === 0 ? (
-                    <p className="text-slate-600 italic">Para ejecutar procedimientos, publica un handler REST protegido en ORDS. Ninguna operación PL/SQL se ejecuta desde esta pantalla.</p>
+                  <label className="block space-y-1.5 text-xs text-slate-400">
+                    <span>Parámetros JSON</span>
+                    <textarea
+                      rows={5}
+                      value={procedureParameters}
+                      onChange={(event) => setProcedureParameters(event.target.value)}
+                      spellCheck="false"
+                      className="w-full resize-y bg-slate-950 border border-slate-700 rounded-md px-3 py-2 font-mono text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+                    />
+                  </label>
+
+                  {selectedProcedureId === 'prc_actualizar_estado_alertas' && (
+                    <p className="text-xs text-amber-300">
+                      Esta operación modifica alertas existentes. Verifica p_nuevo_estado y p_prioridad antes de ejecutarla.
+                    </p>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isRunningProcedure}
+                    className="flex items-center justify-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-md text-xs font-bold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Play className={`w-3.5 h-3.5 ${isRunningProcedure ? 'animate-pulse' : ''}`} />
+                    {isRunningProcedure ? 'Ejecutando...' : 'Ejecutar procedimiento'}
+                  </button>
+                </form>
+
+                <div className="mt-5 bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 min-h-[140px]">
+                  <div className="flex items-center gap-2 pb-2 border-b border-slate-800/80 mb-3 text-slate-500 text-[11px]">
+                    <Terminal className="w-3.5 h-3.5" /> Respuesta ORDS
+                  </div>
+                  {procedureError ? (
+                    <pre role="alert" className="whitespace-pre-wrap break-words text-rose-300">{procedureError}</pre>
+                  ) : procedureOutput ? (
+                    <pre className="whitespace-pre-wrap break-words text-emerald-300">{procedureOutput}</pre>
                   ) : (
-                    <div className="space-y-1">
-                      {terminalOutput.map((line, i) => (
-                        <p key={i} className={line.includes('TICKET') ? 'text-amber-400 font-bold' : line.includes('completed') ? 'text-emerald-400' : 'text-slate-300'}>
-                          {line}
-                        </p>
-                      ))}
-                    </div>
+                    <p className="text-slate-600 italic">La respuesta del procedimiento aparecerá aquí.</p>
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'triggers' && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Zap className="w-5 h-5 text-amber-400" /> Ejecuciones de triggers en Oracle
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Eventos DML confirmados en RUTA_PLANIFICADA, EMPLEADO y VEHICULO. Se muestran hasta los últimos 100 registros.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={refreshTriggerEvents}
+                  disabled={isLoadingTriggerEvents}
+                  className="flex items-center gap-2 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-semibold text-slate-200 hover:border-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingTriggerEvents ? 'animate-spin' : ''}`} />
+                  Actualizar
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {['RUTA_PLANIFICADA', 'EMPLEADO', 'VEHICULO'].map((tableName) => {
+                  const tableEvents = triggerEvents.filter(
+                    (event) => event.sourceTable === tableName
+                  );
+                  return (
+                    <div key={tableName} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-slate-500">Trigger de {tableName}</p>
+                      <p className="text-2xl font-bold text-white mt-1">{tableEvents.length}</p>
+                      <p className="text-xs text-slate-400">de los 100 eventos consultados</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {triggerEventsError && (
+                <div role="alert" className="border border-amber-500/30 bg-amber-500/10 rounded-lg px-4 py-3 text-xs text-amber-200">
+                  Algunas bitácoras no se pudieron consultar: {triggerEventsError}
+                </div>
+              )}
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-300">
+                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] border-b border-slate-800">
+                      <tr>
+                        <th className="p-3">Fecha y hora</th>
+                        <th className="p-3">Tabla</th>
+                        <th className="p-3">Operación</th>
+                        <th className="p-3">Usuario Oracle</th>
+                        <th className="p-3">Detalle del cambio</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {triggerEvents.map((event, index) => (
+                        <tr key={readField(event, 'id_auditoria') === '-' ? `${event.sourceTable}-${index}` : `${event.sourceTable}-${readField(event, 'id_auditoria')}`}>
+                          <td className="p-3 whitespace-nowrap">{readField(event, 'fecha_accion')}</td>
+                          <td className="p-3 font-mono">{event.sourceTable}</td>
+                          <td className="p-3">
+                            <span className="rounded bg-cyan-500/10 px-2 py-1 text-cyan-300">{readField(event, 'accion')}</span>
+                          </td>
+                          <td className="p-3">{readField(event, 'usuario_oracle')}</td>
+                          <td className="p-3">
+                            <div className="space-y-1">
+                              {Object.entries(event)
+                                .filter(([field]) => !['links', 'sourceTable', 'id_auditoria', 'fecha_accion', 'usuario_oracle', 'accion'].includes(field.toLowerCase()))
+                                .map(([field, value]) => (
+                                  <p key={field}><span className="text-slate-500">{field}:</span> {String(value ?? '-')}</p>
+                                ))}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {!isLoadingTriggerEvents && triggerEvents.length === 0 && (
+                        <tr><td colSpan="5" className="p-8 text-center text-slate-500">No se encontraron registros en las bitácoras consultadas.</td></tr>
+                      )}
+                      {isLoadingTriggerEvents && (
+                        <tr><td colSpan="5" className="p-8 text-center text-slate-500">Consultando tablas de auditoría...</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Los resultados provienen de AUDITORIA_RUTAS, AUDITORIA_EMPLEADO y AUDITORIA_VEHICULO. Las columnas del detalle dependen del esquema de cada bitácora.
+              </p>
             </div>
           )}
 

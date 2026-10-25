@@ -6,7 +6,17 @@ La flota y las alertas vigentes se leen desde `vehiculo` y `alerta_combo`; las r
 
 El traslado usa dos solicitudes HTTP y no es una transacción Oracle distribuida: la app no intenta borrar el origen si falla el POST. Si el POST tiene éxito y el DELETE falla, la alerta permanecerá en ambas colecciones hasta reintentar; el reintento detecta la copia y vuelve a intentar el borrado.
 
-No se simulan telemetrías ni alertas en memoria. La conexión a `AUDITORIA_ALERTAS` permite consultar/crear desde Tablas Oracle, pero la colección está vacía y no se pudo determinar su estructura; por eso resolver una alerta no inserta una fila de auditoría automáticamente. Para eso se necesita un trigger en Oracle o el DDL/columnas de esa tabla.
+No se simulan telemetrías ni alertas en memoria. `AUDITORIA_ALERTAS` no está expuesta en el selector AutoREST de la aplicación. Resolver una alerta tampoco inserta una fila de auditoría automáticamente; para eso se necesita un trigger en Oracle o el DDL/columnas de esa tabla.
+
+## Monitor de triggers
+
+La sección **Auditoría de Triggers** consulta las tablas existentes `AUDITORIA_RUTAS`, `AUDITORIA_EMPLEADO` y `AUDITORIA_VEHICULO` mediante sus endpoints AutoREST de solo lectura. Presenta fecha, acción y usuario, además de los campos de detalle que devuelva cada tabla. El botón **Actualizar** vuelve a consultar hasta 100 filas por bitácora. ORDS debe permitir el origen web de la aplicación en CORS. `AUDITORIA_ALERTAS` no se usa en esta sección ni se agrega al selector de Tablas Oracle.
+
+El script `database/audit_triggers.sql` crea o reemplaza y habilita los triggers de `RUTA_PLANIFICADA`, `EMPLEADO` y `VEHICULO`. Ejecútalo con **Run Script (F5)** en SQL Developer, conectado como el propietario de esas tablas; al final se muestran los estados y errores de compilación. Los registros se insertan en la misma transacción del cambio, por lo que quedan guardados al hacer `COMMIT` y desaparecen si se hace `ROLLBACK`. Prueba una operación DML y pulsa **Actualizar** en el monitor.
+
+## Runner PL/SQL Oracle
+
+La pestaña **Runner PL/SQL Oracle** ejecuta por `POST` los handlers ORDS `generacion_ticket_alerta`, `prc_procesar_telemetria`, `prc_actualizar_estado_alertas` y `prc_reporte_flota`. Los parámetros se envían como objeto JSON; el formulario muestra los nombres publicados por OpenAPI y presenta la respuesta o el error devuelto por ORDS. `prc_actualizar_estado_alertas` solicita confirmación porque puede modificar alertas existentes. ORDS debe permitir el origen de la aplicación en CORS.
 
 Para **Dispositivo GPS**, la URL recibida era idéntica a la de **Cargo**. No se reutiliza por seguridad. Copia la URL AutoREST real de la tabla de GPS, agrégala a `.env` como `VITE_ORDS_LOCATIONS_URL` usando el formato de `.env.example` y reinicia Vite. Sin esa variable, la opción GPS queda deshabilitada.
 

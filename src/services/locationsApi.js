@@ -1,10 +1,45 @@
 const ordsRoot = 'https://g06a0176b9b4a08-m82ksr4usxkhxrvn.adb.sa-santiago-1.oraclecloudapps.com/ords/admin';
 const gpsLocationsUrl = import.meta.env.VITE_ORDS_LOCATIONS_URL?.trim();
+const triggerAuditResources = [
+  { tableName: 'RUTA_PLANIFICADA', url: `${ordsRoot}/auditoria_rutas/` },
+  { tableName: 'EMPLEADO', url: `${ordsRoot}/auditoria_empleado/` },
+  { tableName: 'VEHICULO', url: `${ordsRoot}/auditoria_vehiculo/` },
+];
+
+export const ORDS_PROCEDURES = [
+  {
+    id: 'generacion_ticket_alerta',
+    label: 'Generación de ticket de alerta',
+    description: 'Invoca el procedimiento de generación de tickets de alerta.',
+    parameters: 'Sin parámetros publicados por ORDS.',
+    url: `${ordsRoot}/generacion_ticket_alerta/`,
+  },
+  {
+    id: 'prc_procesar_telemetria',
+    label: 'Procesar telemetría',
+    description: 'Procesa telemetría y devuelve los resultados disponibles en ORDS.',
+    parameters: 'p_alertas_criticas (número), p_alertas_monitor (número).',
+    url: `${ordsRoot}/prc_procesar_telemetria/`,
+  },
+  {
+    id: 'prc_actualizar_estado_alertas',
+    label: 'Actualizar estado de alertas',
+    description: 'Actualiza estados de alertas según el estado y la prioridad indicados.',
+    parameters: 'p_nuevo_estado (texto), p_prioridad (texto).',
+    url: `${ordsRoot}/prc_actualizar_estado_alertas/`,
+  },
+  {
+    id: 'prc_reporte_flota',
+    label: 'Reporte de flota',
+    description: 'Invoca el procedimiento de reporte de flota.',
+    parameters: 'Sin parámetros publicados por ORDS.',
+    url: `${ordsRoot}/prc_reporte_flota/`,
+  },
+];
 
 export const ORDS_RESOURCES = [
   { id: 'alerta_combo', label: 'Alerta Combo', description: 'Alertas registradas en el sistema', url: `${ordsRoot}/alerta_combo/` },
   { id: 'alertas_resueltas', label: 'Alertas Resueltas', description: 'Alertas trasladadas al resolverse', url: `${ordsRoot}/alertas_resueltas/` },
-  { id: 'auditoria_alertas', label: 'Auditoría Alerta', description: 'Resolución de alertas, responsable y detalles', url: `${ordsRoot}/auditoria_alertas/` },
   { id: 'comuna', label: 'Comuna', description: 'Comunas para asignar a otras entidades', url: `${ordsRoot}/comuna/` },
   { id: 'empleado', label: 'Empleado', description: 'Datos de empleados', url: `${ordsRoot}/empleado/` },
   { id: 'region', label: 'Región', description: 'Regiones para asignar a otras entidades', url: `${ordsRoot}/region/` },
@@ -47,6 +82,68 @@ async function request(resourceId, path = '', options = {}) {
 export async function getResourceRows(resourceId) {
   const result = await request(resourceId, '?limit=100');
   return result.items ?? [];
+}
+
+export async function executeOracleProcedure(procedureId, parameters) {
+  const procedure = ORDS_PROCEDURES.find((item) => item.id === procedureId);
+  if (!procedure) {
+    throw new Error(`Procedimiento ORDS desconocido: ${procedureId}`);
+  }
+
+  const response = await fetch(procedure.url, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(parameters),
+  });
+  const responseBody = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`ORDS ${response.status}: ${responseBody || response.statusText}`);
+  }
+
+  if (!responseBody) return 'Procedimiento ejecutado correctamente. ORDS no devolvió contenido.';
+
+  try {
+    return JSON.stringify(JSON.parse(responseBody), null, 2);
+  } catch {
+    return responseBody;
+  }
+}
+
+export async function getTriggerEvents() {
+  const results = await Promise.all(triggerAuditResources.map(async ({ tableName, url }) => {
+    try {
+      const endpoint = new URL(url);
+      endpoint.searchParams.set('limit', '100');
+      const response = await fetch(endpoint, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`ORDS ${response.status}: ${details || response.statusText}`);
+      }
+
+      const result = await response.json();
+      if (!Array.isArray(result.items)) {
+        throw new Error('La respuesta ORDS no contiene una lista "items".');
+      }
+
+      return { events: result.items.map((event) => ({ ...event, sourceTable: tableName })) };
+    } catch (error) {
+      return { error: `${tableName}: ${error.message}` };
+    }
+  }));
+
+  return {
+    events: results.flatMap((result) => result.events ?? []),
+    errors: results.flatMap((result) => result.error ? [result.error] : []),
+  };
 }
 
 export async function resourceRowExists(resourceId, column, value) {
